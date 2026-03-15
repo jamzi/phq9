@@ -75,7 +75,7 @@ function getHistorySummary(history: StoredCompletedPhq9Response[]) {
 
   return {
     tone: 'worsening' as const,
-    title: `${scoreDelta} point${scoreDelta === 1 ? '' : 's'} higher than last time.`,
+    title: 'Your score is higher than last time.',
     detail: 'That can mean symptoms are feeling heavier lately, so it is worth paying attention to.',
   }
 }
@@ -124,18 +124,22 @@ export function Phq9App() {
   const answeredCount =
     formValues.symptoms.filter((answer) => answer !== null).length +
     (formValues.difficulty === null ? 0 : 1)
+  const currentStepNumber = showResultView ? totalSteps : Math.min(currentStep + 1, totalSteps)
   const hasStarted = currentStep > 0 || answeredCount > 0 || result !== null
   const showSubmitButton = isDifficultyStep && hasDifficultyAnswer && !showResultView
   const showNextButton = !isDifficultyStep && hasCurrentAnswer && !showResultView
   const showNavigationControls = !showResultView && (currentStep > 0 || showSubmitButton || showNextButton)
   const panelTitle = showResultView
     ? 'Your result'
-    : isDifficultyStep
-      ? `Question ${totalSteps} of ${totalSteps}`
-      : `Question ${currentQuestion?.id} of ${totalSteps}`
+    : 'Quick check-in'
+  const progressLabel = showResultView
+    ? `${answeredCount} of ${totalSteps} answered`
+    : `Step ${currentStepNumber} of ${totalSteps}`
   const panelCopy = showResultView
     ? 'Use this as a screening snapshot, not a diagnosis.'
-    : 'Answer based on the last 2 weeks.'
+    : isDifficultyStep
+      ? 'One last question before scoring.'
+      : 'Tap one answer to move to the next question.'
 
   useEffect(() => {
     const previousValue = previousItem9.current
@@ -413,8 +417,7 @@ export function Phq9App() {
     <main className="page-wrap app-shell">
       <section className={`paper-panel intro-panel${hasStarted ? ' intro-panel-started' : ''}`}>
         <h1 className="display-title">
-          <span className="desktop-title">A simple PHQ-9 check-in for the last 2 weeks.</span>
-          <span className="mobile-title">PHQ-9 check-in</span>
+          {hasStarted ? 'PHQ-9' : 'PHQ-9 check-in'}
         </h1>
         <p className="lede">
           This screening can help you notice patterns and decide whether to reach out for
@@ -428,8 +431,8 @@ export function Phq9App() {
             <div>
               <h2 className="section-title">{panelTitle}</h2>
             </div>
-            <p className="progress-copy">
-              {answeredCount} of {totalSteps} answered
+            <p aria-live="polite" className="progress-copy">
+              {progressLabel}
             </p>
           </div>
 
@@ -614,7 +617,7 @@ export function Phq9App() {
             data-testid={`question-${currentQuestion.id}`}
           >
             <legend>
-              <span className="question-prompt">{currentQuestion.prompt}</span>
+              <span className="question-prompt question-prompt-symptom">{currentQuestion.prompt}</span>
             </legend>
 
             <div className="choice-grid">
@@ -670,7 +673,7 @@ export function Phq9App() {
         ) : (
           <fieldset className="question-card single-question-card" data-testid="difficulty-question">
             <legend>
-              <span className="question-prompt">
+              <span className="question-prompt question-prompt-difficulty">
                 If you checked off any problems, how difficult have these problems made it for
                 you to do your work, take care of things at home, or get along with other
                 people?
@@ -774,34 +777,7 @@ export function Phq9App() {
         </div>
       </form>
 
-      <section className="paper-panel help-panel">
-        <h2 className="section-title">A few reminders</h2>
-        <div className="help-grid">
-          <article className="help-card">
-            <h3>Screening only</h3>
-            <p>
-              The PHQ-9 helps organize symptoms. It does not replace a clinician&apos;s judgment.
-            </p>
-          </article>
-          <article className="help-card">
-            <h3>Question 9 matters</h3>
-            <p>
-              Any positive answer on the last question should be taken seriously, even if the
-              total score is otherwise low.
-            </p>
-          </article>
-          <article className="help-card">
-            <h3>Talk to someone</h3>
-            <p>
-              If symptoms are worsening, affecting daily life, or making you feel unsafe, reach
-              out to a clinician, crisis line, or trusted person.
-            </p>
-          </article>
-        </div>
-        <p className="footer-copy">
-          Completed check-ins are saved anonymously so they can be reviewed later.
-        </p>
-      </section>
+      <p className="footer-copy risk-copy">Use on your own risk.</p>
 
       {isSafetyDialogOpen ? (
         <div className="dialog-backdrop">
