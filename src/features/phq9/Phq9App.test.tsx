@@ -4,6 +4,14 @@ import { comparisonFixtures } from '#/lib/phq9.fixtures'
 import { PHQ9_QUESTIONS } from '#/lib/phq9'
 import { Phq9App } from './Phq9App'
 
+const { saveCompletedResponseMock } = vi.hoisted(() => ({
+  saveCompletedResponseMock: vi.fn(),
+}))
+
+vi.mock('./saveCompletedResponse', () => ({
+  saveCompletedResponse: saveCompletedResponseMock,
+}))
+
 function getResponseLabel(answer: number) {
   return answer === 0
     ? 'Not at all'
@@ -17,6 +25,12 @@ function getResponseLabel(answer: number) {
 function flushAdvance() {
   act(() => {
     vi.runOnlyPendingTimers()
+  })
+}
+
+async function flushSave() {
+  await act(async () => {
+    await Promise.resolve()
   })
 }
 
@@ -36,6 +50,8 @@ function completeQuestionnaire(answers: number[], difficultyLabel: string) {
 describe('Phq9App', () => {
   beforeEach(() => {
     vi.useFakeTimers()
+    saveCompletedResponseMock.mockReset()
+    saveCompletedResponseMock.mockResolvedValue(undefined)
   })
 
   afterEach(() => {
@@ -82,21 +98,41 @@ describe('Phq9App', () => {
     expect(screen.getByTestId('question-3')).toBeInTheDocument()
   })
 
-  test('renders the completed score and severity band', () => {
+  test('renders the completed score and severity band', async () => {
     render(<Phq9App />)
 
     completeQuestionnaire(comparisonFixtures[1].answers, 'Somewhat difficult')
+    await flushSave()
 
     expect(screen.getByTestId('result-view')).toBeInTheDocument()
     expect(screen.getByTestId('score-total')).toHaveTextContent('9')
     expect(screen.getByTestId('severity-band')).toHaveTextContent('Mild')
     expect(screen.queryByTestId('difficulty-question')).not.toBeInTheDocument()
+    expect(screen.getByTestId('save-status')).toHaveTextContent('Saved')
   })
 
-  test('lets the user review answers or start over from the result view', () => {
+  test('saves the completed response and shows a saved state', async () => {
     render(<Phq9App />)
 
     completeQuestionnaire(comparisonFixtures[1].answers, 'Somewhat difficult')
+    await flushSave()
+
+    expect(saveCompletedResponseMock).toHaveBeenCalledWith({
+      submittedAt: expect.any(String),
+      symptoms: comparisonFixtures[1].answers,
+      difficulty: comparisonFixtures[1].difficulty,
+      totalScore: comparisonFixtures[1].expectedScore,
+      severityBand: comparisonFixtures[1].expectedSeverity,
+      needsFollowUp: false,
+      item9Positive: false,
+    })
+  })
+
+  test('lets the user review answers or start over from the result view', async () => {
+    render(<Phq9App />)
+
+    completeQuestionnaire(comparisonFixtures[1].answers, 'Somewhat difficult')
+    await flushSave()
 
     fireEvent.click(screen.getByTestId('change-answers-button'))
 
@@ -113,7 +149,7 @@ describe('Phq9App', () => {
     expect(screen.queryByTestId('back-button')).not.toBeInTheDocument()
   })
 
-  test('shows immediate and results-level safety messaging for a positive item 9 answer', () => {
+  test('shows immediate and results-level safety messaging for a positive item 9 answer', async () => {
     render(<Phq9App />)
 
     PHQ9_QUESTIONS.slice(0, 8).forEach((question) => {
@@ -134,8 +170,31 @@ describe('Phq9App', () => {
     fireEvent.click(within(difficultyGroup).getByRole('radio', { name: 'Somewhat difficult' }))
     flushAdvance()
 
+    await flushSave()
     expect(screen.getByTestId('safety-panel')).toHaveTextContent(
       'Because you reported at least some thoughts',
     )
+  })
+
+  test('keeps the result visible and retries the same payload if saving fails', async () => {
+    saveCompletedResponseMock.mockRejectedValueOnce(new Error('Request failed')).mockResolvedValueOnce(undefined)
+
+    render(<Phq9App />)
+
+    completeQuestionnaire(comparisonFixtures[1].answers, 'Somewhat difficult')
+    await flushSave()
+
+    expect(screen.getByTestId('save-status')).toHaveTextContent("Couldn't save this result")
+
+    expect(screen.getByTestId('result-view')).toBeInTheDocument()
+
+    const firstPayload = saveCompletedResponseMock.mock.calls[0]?.[0]
+
+    fireEvent.click(screen.getByTestId('retry-save-button'))
+    await flushSave()
+
+    expect(saveCompletedResponseMock).toHaveBeenCalledTimes(2)
+    expect(saveCompletedResponseMock.mock.calls[1]?.[0]).toEqual(firstPayload)
+    expect(screen.getByTestId('save-status')).toHaveTextContent('Saved')
   })
 })

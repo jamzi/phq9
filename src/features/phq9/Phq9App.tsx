@@ -4,7 +4,8 @@ import {
   EMPTY_FORM_VALUES,
   PHQ9_QUESTIONS,
   RESPONSE_OPTIONS,
-  calculatePhq9Result,
+  buildCompletedPhq9Response,
+  type CompletedPhq9Response,
   formatSeverityBand,
   getMissingSymptomIndexes,
   type DifficultyAnswer,
@@ -12,13 +13,17 @@ import {
   type Phq9FormValues,
   type Phq9Result,
 } from '#/lib/phq9'
+import { saveCompletedResponse } from './saveCompletedResponse'
 
 const AUTO_ADVANCE_DELAY_MS = 180
+type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
 
 export function Phq9App() {
   const totalSteps = PHQ9_QUESTIONS.length + 1
   const [formValues, setFormValues] = useState<Phq9FormValues>(EMPTY_FORM_VALUES)
   const [result, setResult] = useState<Phq9Result | null>(null)
+  const [completedResponse, setCompletedResponse] = useState<CompletedPhq9Response | null>(null)
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
   const [showErrors, setShowErrors] = useState(false)
   const [isSafetyDialogOpen, setIsSafetyDialogOpen] = useState(false)
   const [currentStep, setCurrentStep] = useState(0)
@@ -26,6 +31,7 @@ export function Phq9App() {
   const previousItem9 = useRef<PhqAnswer | null>(null)
   const resultsRef = useRef<HTMLElement | null>(null)
   const autoAdvanceTimeoutRef = useRef<number | null>(null)
+  const saveAttemptRef = useRef(0)
 
   const item9Answer = formValues.symptoms[8]
   const isDifficultyStep = currentStep === PHQ9_QUESTIONS.length
@@ -99,6 +105,8 @@ export function Phq9App() {
     })
     setShowErrors(false)
     setResult(null)
+    setCompletedResponse(null)
+    setSaveStatus('idle')
   }
 
   function updateDifficulty(value: DifficultyAnswer) {
@@ -108,6 +116,8 @@ export function Phq9App() {
     }))
     setShowErrors(false)
     setResult(null)
+    setCompletedResponse(null)
+    setSaveStatus('idle')
   }
 
   function cancelPendingAdvance() {
@@ -134,6 +144,44 @@ export function Phq9App() {
     setCurrentStep(Math.max(0, Math.min(step, totalSteps - 1)))
   }
 
+  async function persistCompletedResponse(
+    nextCompletedResponse: CompletedPhq9Response,
+    saveAttempt: number,
+  ) {
+    try {
+      await saveCompletedResponse(nextCompletedResponse)
+
+      if (saveAttemptRef.current !== saveAttempt) {
+        return
+      }
+
+      setSaveStatus('saved')
+    } catch {
+      if (saveAttemptRef.current !== saveAttempt) {
+        return
+      }
+
+      setSaveStatus('error')
+    }
+  }
+
+  function startCompletedResponseSave(nextCompletedResponse: CompletedPhq9Response) {
+    const nextSaveAttempt = saveAttemptRef.current + 1
+    saveAttemptRef.current = nextSaveAttempt
+
+    setCompletedResponse(nextCompletedResponse)
+    setSaveStatus('saving')
+    void persistCompletedResponse(nextCompletedResponse, nextSaveAttempt)
+  }
+
+  function finalizeQuestionnaire(nextFormValues: Phq9FormValues = formValues) {
+    const nextCompletedResponse = buildCompletedPhq9Response(nextFormValues)
+
+    setShowErrors(false)
+    setResult(nextCompletedResponse)
+    startCompletedResponseSave(nextCompletedResponse)
+  }
+
   function handleNextStep() {
     cancelPendingAdvance()
 
@@ -156,11 +204,6 @@ export function Phq9App() {
     goToStep(currentStep - 1)
   }
 
-  function scoreQuestionnaire(symptoms: Array<PhqAnswer | null> = formValues.symptoms) {
-    setShowErrors(false)
-    setResult(calculatePhq9Result(symptoms as PhqAnswer[]))
-  }
-
   function handleSymptomSelection(index: number, value: PhqAnswer) {
     updateSymptomAnswer(index, value)
 
@@ -176,7 +219,10 @@ export function Phq9App() {
 
     if (validation.missingSymptomIndexes.length === 0) {
       scheduleAdvance(`difficulty-${value}`, () => {
-        scoreQuestionnaire()
+        finalizeQuestionnaire({
+          ...formValues,
+          difficulty: value,
+        })
       })
     }
   }
@@ -196,25 +242,48 @@ export function Phq9App() {
       return
     }
 
-    scoreQuestionnaire()
+    finalizeQuestionnaire()
   }
 
   function handleChangeAnswers() {
     cancelPendingAdvance()
+    saveAttemptRef.current += 1
     setShowErrors(false)
     setResult(null)
+    setCompletedResponse(null)
+    setSaveStatus('idle')
     goToStep(PHQ9_QUESTIONS.length)
   }
 
   function handleStartOver() {
     cancelPendingAdvance()
+    saveAttemptRef.current += 1
     previousItem9.current = null
     setFormValues(EMPTY_FORM_VALUES)
     setResult(null)
+    setCompletedResponse(null)
+    setSaveStatus('idle')
     setShowErrors(false)
     setIsSafetyDialogOpen(false)
     setCurrentStep(0)
   }
+
+  function handleRetrySave() {
+    if (completedResponse === null) {
+      return
+    }
+
+    startCompletedResponseSave(completedResponse)
+  }
+
+  const saveStatusMessage =
+    saveStatus === 'saving'
+      ? 'Saving...'
+      : saveStatus === 'saved'
+        ? 'Saved'
+        : saveStatus === 'error'
+          ? "Couldn't save this result"
+          : null
 
   const currentStepError =
     showErrors && currentQuestion !== null && validation.missingSymptomIndexes.includes(currentStep)
@@ -301,6 +370,27 @@ export function Phq9App() {
               This questionnaire is a symptom screener. Diagnosis should not rely on this score
               alone.
             </p>
+
+            {saveStatusMessage ? (
+              <section
+                className={`save-status save-status-${saveStatus}`}
+                data-save-state={saveStatus}
+                data-testid="save-status"
+              >
+                <p className="result-label">Save status</p>
+                <p className="save-status-text">{saveStatusMessage}</p>
+                {saveStatus === 'error' ? (
+                  <button
+                    className="ghost-button"
+                    data-testid="retry-save-button"
+                    onClick={handleRetrySave}
+                    type="button"
+                  >
+                    Retry save
+                  </button>
+                ) : null}
+              </section>
+            ) : null}
 
             {result.item9Positive ? (
               <section className="safety-panel" data-testid="safety-panel">
@@ -529,7 +619,7 @@ export function Phq9App() {
           </article>
         </div>
         <p className="footer-copy">
-          This MVP does not save your answers or send them to a backend.
+          Completed check-ins are saved anonymously so they can be reviewed later.
         </p>
       </section>
 

@@ -35,6 +35,12 @@ export interface Phq9Result {
   item9Positive: boolean
 }
 
+export interface CompletedPhq9Response extends Phq9Result {
+  submittedAt: string
+  symptoms: PhqAnswer[]
+  difficulty: DifficultyAnswer
+}
+
 export const RESPONSE_OPTIONS: Array<{ value: PhqAnswer; label: string }> = [
   { value: 0, label: 'Not at all' },
   { value: 1, label: 'Several days' },
@@ -99,6 +105,33 @@ export function calculatePhq9Result(symptoms: PhqAnswer[]): Phq9Result {
     severityBand: getSeverityBand(totalScore),
     needsFollowUp: totalScore >= 10,
     item9Positive: symptoms[8] > 0,
+  }
+}
+
+export function buildCompletedPhq9Response(
+  formValues: Phq9FormValues,
+  submittedAt = new Date().toISOString(),
+): CompletedPhq9Response {
+  const missingSymptomIndexes = getMissingSymptomIndexes(formValues.symptoms)
+
+  if (missingSymptomIndexes.length > 0 || formValues.difficulty === null) {
+    throw new Error('Cannot build a completed PHQ-9 response from incomplete form values.')
+  }
+
+  const symptoms = formValues.symptoms.map((answer, index) => {
+    if (answer === null) {
+      throw new Error(`Missing PHQ-9 symptom answer at index ${index}.`)
+    }
+
+    return answer
+  })
+  const result = calculatePhq9Result(symptoms)
+
+  return {
+    submittedAt,
+    symptoms,
+    difficulty: formValues.difficulty,
+    ...result,
   }
 }
 

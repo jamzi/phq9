@@ -487,6 +487,36 @@ pre code {
   margin: 18px 0 0;
 }
 
+.save-status {
+  display: grid;
+  gap: 10px;
+  margin-top: 18px;
+  border: 2px solid rgba(45, 36, 32, 0.16);
+  border-radius: 22px 18px 20px 16px;
+  background: rgba(255, 255, 255, 0.76);
+  padding: 18px 16px;
+}
+
+.save-status-text {
+  margin: 0;
+  font-weight: 700;
+  color: var(--ink);
+}
+
+.save-status-saving {
+  border-color: rgba(154, 93, 47, 0.22);
+}
+
+.save-status-saved {
+  border-color: rgba(88, 122, 70, 0.24);
+  background: rgba(242, 250, 238, 0.88);
+}
+
+.save-status-error {
+  border-color: rgba(168, 58, 50, 0.28);
+  background: rgba(255, 245, 244, 0.9);
+}
+
 .follow-up-note {
   margin-top: 18px;
   border-left: 4px solid var(--accent);

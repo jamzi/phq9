@@ -6,8 +6,12 @@ To run this application:
 
 ```bash
 pnpm install
+pnpm exec convex dev --local
 pnpm dev
 ```
+
+The PHQ-9 app now saves completed check-ins to Convex. `convex dev --local` writes the local
+`VITE_CONVEX_URL` into `.env.local` and keeps the local backend running while you develop.
 
 # Building For Production
 
@@ -23,6 +27,7 @@ This project uses [Vitest](https://vitest.dev/) for testing. You can run the tes
 
 ```bash
 pnpm test
+pnpm test:e2e
 ```
 
 ## Styling

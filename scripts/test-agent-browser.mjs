@@ -1,11 +1,19 @@
 import {
+  answerLocalDifficultyScript,
+  answerLocalQuestionScript,
   createAgentBrowserSession,
+  dismissLocalSafetyDialogScript,
+  fetchLatestCompletedResponse,
+  getConfiguredConvexUrl,
   localStateScript,
   localUrl,
   normalizeSeverity,
+  startConvexDev,
   startDevServer,
-  stopDevServer,
+  stopProcess,
+  waitForConfiguredConvexUrl,
   waitForLocalApp,
+  waitForSavedResult,
 } from './agent-browser-helpers.mjs'
 
 const mildFixture = {
@@ -55,51 +63,59 @@ function parseLocalState(output) {
   }
 }
 
-function localFillScript(answers, difficulty) {
-  return `
-    const answers = ${JSON.stringify(answers)};
-    answers.forEach((value, index) => {
-      const input = document.querySelector('input[name="q' + (index + 1) + '"][value="' + value + '"]');
-      if (!input) throw new Error('Missing local radio for question ' + (index + 1));
-      input.click();
-    });
-    const difficultyInput = document.querySelector('input[name="difficulty"][value="${difficulty}"]');
-    if (!difficultyInput) throw new Error('Missing local difficulty input');
-    difficultyInput.click();
-    const submitButton = document.querySelector('[data-testid="submit-button"]');
-    if (!submitButton) throw new Error('Missing local submit button');
-    submitButton.click();
-    'done';
-  `
+function readLocalState(browser) {
+  return parseLocalState(browser.run(['eval', localStateScript()]))
 }
 
-function localItem9Script(value) {
-  return `
-    const input = document.querySelector('input[name="q9"][value="${value}"]');
-    if (!input) throw new Error('Missing local item 9 radio');
-    input.click();
-    'done';
-  `
+async function answerQuestion(browser, questionNumber, answer) {
+  browser.run(['eval', answerLocalQuestionScript(questionNumber, answer)])
+  await new Promise((resolve) => setTimeout(resolve, 320))
 }
 
-const devServer = startDevServer()
+async function answerDifficulty(browser, difficulty) {
+  browser.run(['eval', answerLocalDifficultyScript(difficulty)])
+  await new Promise((resolve) => setTimeout(resolve, 320))
+}
+
+async function completeWizard(browser, answers, difficulty) {
+  browser.runChain([
+    ['open', localUrl],
+    ['wait', '1000'],
+    ['snapshot', '-i'],
+  ])
+
+  for (const [index, answer] of answers.entries()) {
+    await answerQuestion(browser, index + 1, answer)
+  }
+
+  await answerDifficulty(browser, difficulty)
+  return waitForSavedResult(() => readLocalState(browser))
+}
+
+function isLocalConvexUrl(convexUrl) {
+  return /^https?:\/\/(127\.0\.0\.1|localhost)(?::\d+)?/i.test(convexUrl)
+}
+
+let convexDevServer = null
+let devServer = null
 const browser = createAgentBrowserSession('phq9-local')
 
 try {
+  let convexUrl = getConfiguredConvexUrl()
+
+  if (!convexUrl || isLocalConvexUrl(convexUrl)) {
+    console.log('Starting local Convex dev backend...')
+    convexDevServer = startConvexDev()
+    convexUrl = await waitForConfiguredConvexUrl()
+  }
+
+  devServer = startDevServer()
+
   console.log('Starting local app for agent-browser smoke test...')
   await waitForLocalApp()
 
   console.log('Checking the standard completion flow...')
-  const mildState = parseLocalState(
-    browser.runChain([
-      ['open', localUrl],
-      ['wait', '1000'],
-      ['snapshot', '-i'],
-      ['eval', localFillScript(mildFixture.answers, mildFixture.difficulty)],
-      ['wait', '500'],
-      ['eval', localStateScript()],
-    ]),
-  )
+  const mildState = await completeWizard(browser, mildFixture.answers, mildFixture.difficulty)
 
   assert(
     mildState.score === mildFixture.expectedScore,
@@ -109,19 +125,38 @@ try {
     normalizeSeverity(mildState.severity) === mildFixture.expectedSeverity,
     `Expected mild severity ${mildFixture.expectedSeverity}, got ${mildState.severity}. State: ${JSON.stringify(mildState)}`,
   )
+  assert(mildState.saveState === 'saved', `Expected a saved result. State: ${JSON.stringify(mildState)}`)
+  assert(
+    mildState.saveStatusText?.includes('Saved'),
+    `Expected the save status to show Saved. State: ${JSON.stringify(mildState)}`,
+  )
   assert(!mildState.safetyPanelText, 'Expected no safety panel for the non-item-9 fixture')
 
-  console.log('Checking the immediate item 9 safety dialog...')
-  const immediateSafetyState = parseLocalState(
-    browser.runChain([
-      ['open', localUrl],
-      ['wait', '1000'],
-      ['snapshot', '-i'],
-      ['eval', localItem9Script(1)],
-      ['wait', '300'],
-      ['eval', localStateScript()],
-    ]),
+  const latestCompletedResponse = await fetchLatestCompletedResponse(convexUrl)
+
+  assert(latestCompletedResponse !== null, 'Expected Convex to return the latest completed response')
+  assert(
+    latestCompletedResponse.totalScore === mildFixture.expectedScore,
+    `Expected latest saved score ${mildFixture.expectedScore}, got ${latestCompletedResponse.totalScore}`,
   )
+  assert(
+    normalizeSeverity(latestCompletedResponse.severityBand) === mildFixture.expectedSeverity,
+    `Expected latest saved severity ${mildFixture.expectedSeverity}, got ${latestCompletedResponse.severityBand}`,
+  )
+
+  console.log('Checking the immediate item 9 safety dialog...')
+  browser.runChain([
+    ['open', localUrl],
+    ['wait', '1000'],
+    ['snapshot', '-i'],
+  ])
+
+  for (const [index, answer] of safetyFixture.answers.slice(0, 8).entries()) {
+    await answerQuestion(browser, index + 1, answer)
+  }
+
+  await answerQuestion(browser, 9, 1)
+  const immediateSafetyState = readLocalState(browser)
 
   assert(
     immediateSafetyState.dialogText?.includes('call or text 988'),
@@ -129,16 +164,11 @@ try {
   )
 
   console.log('Checking the persistent results safety panel...')
-  const safetyState = parseLocalState(
-    browser.runChain([
-      ['open', localUrl],
-      ['wait', '1000'],
-      ['snapshot', '-i'],
-      ['eval', localFillScript(safetyFixture.answers, safetyFixture.difficulty)],
-      ['wait', '500'],
-      ['eval', localStateScript()],
-    ]),
-  )
+  browser.run(['eval', dismissLocalSafetyDialogScript()])
+  await new Promise((resolve) => setTimeout(resolve, 320))
+  await answerDifficulty(browser, safetyFixture.difficulty)
+
+  const safetyState = await waitForSavedResult(() => readLocalState(browser))
 
   assert(
     safetyState.score === safetyFixture.expectedScore,
@@ -153,8 +183,22 @@ try {
     'Expected the results view to show the persistent safety panel',
   )
 
+  const latestSafetyResponse = await fetchLatestCompletedResponse(convexUrl)
+
+  assert(
+    latestSafetyResponse?.item9Positive === true,
+    `Expected the latest saved response to keep the item 9 safety flag. Response: ${JSON.stringify(latestSafetyResponse)}`,
+  )
+
   console.log('agent-browser local smoke test passed')
 } finally {
-  await stopDevServer(devServer)
+  if (devServer) {
+    await stopProcess(devServer)
+  }
+
+  if (convexDevServer) {
+    await stopProcess(convexDevServer)
+  }
+
   browser.cleanup()
 }
