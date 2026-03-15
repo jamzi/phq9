@@ -1,14 +1,12 @@
 import { execFileSync, execSync, spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import process from 'node:process'
 import { setTimeout as delay } from 'node:timers/promises'
-import { ConvexHttpClient } from 'convex/browser'
-import { anyApi } from 'convex/server'
 
 export const localUrl = 'http://127.0.0.1:3000'
-const localConvexEnvFile = '.env.local'
+const STORAGE_KEY = 'phq9.completedResponses'
 
 export function createAgentBrowserSession(prefix) {
   const browserHome = mkdtempSync(join(tmpdir(), `${prefix}-agent-browser-`))
@@ -65,18 +63,6 @@ export function startDevServer() {
     env: process.env,
     stdio: 'inherit',
   })
-}
-
-export function startConvexDev() {
-  return spawn(
-    'pnpm',
-    ['exec', 'convex', 'dev', '--local', '--typecheck', 'disable', '--tail-logs', 'disable'],
-    {
-      cwd: process.cwd(),
-      env: process.env,
-      stdio: 'inherit',
-    },
-  )
 }
 
 export async function waitForLocalApp(url = localUrl) {
@@ -153,51 +139,6 @@ export function dismissLocalSafetyDialogScript() {
   `
 }
 
-export function readEnvFile(envFile = localConvexEnvFile) {
-  if (!existsSync(envFile)) {
-    return {}
-  }
-
-  return readFileSync(envFile, 'utf8')
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line && !line.startsWith('#'))
-    .reduce((values, line) => {
-      const separatorIndex = line.indexOf('=')
-
-      if (separatorIndex === -1) {
-        return values
-      }
-
-      const key = line.slice(0, separatorIndex).trim()
-      const rawValue = line.slice(separatorIndex + 1).trim()
-      const value = rawValue.replace(/^['"]|['"]$/g, '')
-
-      return {
-        ...values,
-        [key]: value,
-      }
-    }, {})
-}
-
-export function getConfiguredConvexUrl(envFile = localConvexEnvFile) {
-  return process.env.VITE_CONVEX_URL ?? readEnvFile(envFile).VITE_CONVEX_URL ?? null
-}
-
-export async function waitForConfiguredConvexUrl(envFile = localConvexEnvFile) {
-  for (let attempt = 0; attempt < 60; attempt += 1) {
-    const convexUrl = getConfiguredConvexUrl(envFile)
-
-    if (convexUrl) {
-      return convexUrl
-    }
-
-    await delay(1000)
-  }
-
-  throw new Error(`No VITE_CONVEX_URL found in ${envFile} within 60 seconds.`)
-}
-
 export function localStateScript() {
   return `
     JSON.stringify({
@@ -212,6 +153,34 @@ export function localStateScript() {
       score: document.querySelector('[data-testid="score-total"]')?.textContent?.trim() || null,
       severity: document.querySelector('[data-testid="severity-band"]')?.textContent?.trim() || null,
     });
+  `
+}
+
+export function storedResponsesScript(limit = 6) {
+  return `
+    (() => {
+      const rawValue = window.localStorage.getItem(${JSON.stringify(STORAGE_KEY)});
+
+      if (!rawValue) {
+        return JSON.stringify([]);
+      }
+
+      try {
+        const parsed = JSON.parse(rawValue);
+
+        if (!Array.isArray(parsed)) {
+          return JSON.stringify([]);
+        }
+
+        return JSON.stringify(
+          parsed
+            .sort((left, right) => (right?._creationTime || 0) - (left?._creationTime || 0))
+            .slice(0, ${limit}),
+        );
+      } catch {
+        return JSON.stringify([]);
+      }
+    })();
   `
 }
 
@@ -262,16 +231,4 @@ export async function waitForSavedResult(readState, { retries = 20, delayMs = 30
   }
 
   throw new Error(`Timed out waiting for a saved result. Last state: ${JSON.stringify(latestState)}`)
-}
-
-export async function fetchLatestCompletedResponse(convexUrl) {
-  const client = new ConvexHttpClient(convexUrl)
-
-  return client.query(anyApi.responses.getLatestCompletedResponse, {})
-}
-
-export async function fetchRecentCompletedResponses(convexUrl, limit = 6) {
-  const client = new ConvexHttpClient(convexUrl)
-
-  return client.query(anyApi.responses.getRecentCompletedResponses, { limit })
 }

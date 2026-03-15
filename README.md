@@ -6,12 +6,11 @@ To run this application:
 
 ```bash
 pnpm install
-pnpm exec convex dev --local
 pnpm dev
 ```
 
-The PHQ-9 app now saves completed check-ins to Convex. `convex dev --local` writes the local
-`VITE_CONVEX_URL` into `.env.local` and keeps the local backend running while you develop.
+The PHQ-9 app saves completed check-ins in the browser's local storage. Responses stay on the
+same device and in the same browser profile unless the user clears site data.
 
 # Building For Production
 

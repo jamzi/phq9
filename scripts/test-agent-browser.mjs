@@ -3,15 +3,12 @@ import {
   answerLocalQuestionScript,
   createAgentBrowserSession,
   dismissLocalSafetyDialogScript,
-  fetchLatestCompletedResponse,
-  fetchRecentCompletedResponses,
   localStateScript,
   localUrl,
   normalizeSeverity,
-  startConvexDev,
   startDevServer,
+  storedResponsesScript,
   stopProcess,
-  waitForConfiguredConvexUrl,
   waitForLocalApp,
   waitForSavedResult,
 } from './agent-browser-helpers.mjs'
@@ -51,14 +48,18 @@ function parseJsonLine(output) {
   const jsonLine = [...lines].reverse().find(
     (line) =>
       (line.startsWith('{') && line.endsWith('}')) ||
-      (line.startsWith('"{') && line.endsWith('}"')),
+      (line.startsWith('[') && line.endsWith(']')) ||
+      (line.startsWith('"{') && line.endsWith('}"')) ||
+      (line.startsWith('"[') && line.endsWith(']"')),
   )
 
   if (!jsonLine) {
     throw new Error(`Unable to parse agent-browser output:\n${output}`)
   }
 
-  return JSON.parse(jsonLine.startsWith('"{') ? JSON.parse(jsonLine) : jsonLine)
+  return JSON.parse(
+    jsonLine.startsWith('"{') || jsonLine.startsWith('"[') ? JSON.parse(jsonLine) : jsonLine,
+  )
 }
 
 function parseLocalState(output) {
@@ -72,6 +73,10 @@ function parseLocalState(output) {
 
 function readLocalState(browser) {
   return parseLocalState(browser.run(['eval', localStateScript()]))
+}
+
+function readStoredResponses(browser, limit = 6) {
+  return parseJsonLine(browser.run(['eval', storedResponsesScript(limit)]))
 }
 
 async function answerQuestion(browser, questionNumber, answer) {
@@ -113,16 +118,10 @@ function startOverFromResult(browser) {
   ])
 }
 
-let convexDevServer = null
 let devServer = null
 const browser = createAgentBrowserSession('phq9-local')
 
 try {
-  console.log('Starting local Convex dev backend...')
-  convexDevServer = startConvexDev()
-  const convexUrl = await waitForConfiguredConvexUrl()
-  await new Promise((resolve) => setTimeout(resolve, 3000))
-
   devServer = startDevServer()
 
   console.log('Starting local app for agent-browser smoke test...')
@@ -146,9 +145,9 @@ try {
   )
   assert(!mildState.safetyPanelText, 'Expected no safety panel for the non-item-9 fixture')
 
-  const latestCompletedResponse = await fetchLatestCompletedResponse(convexUrl)
+  const latestCompletedResponse = readStoredResponses(browser, 1)[0] ?? null
 
-  assert(latestCompletedResponse !== null, 'Expected Convex to return the latest completed response')
+  assert(latestCompletedResponse !== null, 'Expected local storage to return the latest completed response')
   assert(
     latestCompletedResponse.totalScore === mildFixture.expectedScore,
     `Expected latest saved score ${mildFixture.expectedScore}, got ${latestCompletedResponse.totalScore}`,
@@ -186,7 +185,7 @@ try {
     `Expected the progress panel to compare with the prior result. State: ${JSON.stringify(improvedState)}`,
   )
 
-  const recentCompletedResponses = await fetchRecentCompletedResponses(convexUrl)
+  const recentCompletedResponses = readStoredResponses(browser)
 
   assert(
     recentCompletedResponses.length >= 2,
@@ -240,7 +239,7 @@ try {
     'Expected the results view to show the persistent safety panel',
   )
 
-  const latestSafetyResponse = await fetchLatestCompletedResponse(convexUrl)
+  const latestSafetyResponse = readStoredResponses(browser, 1)[0] ?? null
 
   assert(
     latestSafetyResponse?.item9Positive === true,
@@ -251,10 +250,6 @@ try {
 } finally {
   if (devServer) {
     await stopProcess(devServer)
-  }
-
-  if (convexDevServer) {
-    await stopProcess(convexDevServer)
   }
 
   browser.cleanup()
