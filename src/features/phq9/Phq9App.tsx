@@ -13,17 +13,97 @@ import {
   type Phq9FormValues,
   type Phq9Result,
 } from '#/lib/phq9'
-import { saveCompletedResponse } from './saveCompletedResponse'
+import {
+  fetchRecentCompletedResponses,
+  saveCompletedResponse,
+  type StoredCompletedPhq9Response,
+} from './saveCompletedResponse'
 
 const AUTO_ADVANCE_DELAY_MS = 180
+const HISTORY_LIMIT = 6
 type SaveStatus = 'idle' | 'saving' | 'saved' | 'error'
+type HistoryStatus = 'idle' | 'loading' | 'ready' | 'error'
+
+function formatHistoryDate(submittedAt: string) {
+  const submittedDate = new Date(submittedAt)
+
+  if (Number.isNaN(submittedDate.getTime())) {
+    return 'Saved'
+  }
+
+  return new Intl.DateTimeFormat(undefined, {
+    month: 'short',
+    day: 'numeric',
+  }).format(submittedDate)
+}
+
+function getHistorySummary(history: StoredCompletedPhq9Response[]) {
+  if (history.length === 0) {
+    return {
+      tone: 'steady' as const,
+      title: 'Progress will appear here after you save a few check-ins.',
+      detail: 'Lower scores are better. Higher scores mean more symptoms and deserve more attention.',
+    }
+  }
+
+  if (history.length === 1) {
+    return {
+      tone: 'steady' as const,
+      title: `Score ${history[0].totalScore} is your starting point.`,
+      detail: 'Lower scores are better. Save one more check-in and we will show whether things are easing or getting heavier.',
+    }
+  }
+
+  const [latest, previous] = history
+  const scoreDelta = latest.totalScore - previous.totalScore
+
+  if (scoreDelta === 0) {
+    return {
+      tone: 'steady' as const,
+      title: 'Your score matches your last check-in.',
+      detail: 'That means symptoms look about the same. Lower scores are better, so no drop means things have not eased yet.',
+    }
+  }
+
+  if (scoreDelta < 0) {
+    return {
+      tone: 'improving' as const,
+      title: `${Math.abs(scoreDelta)} point${Math.abs(scoreDelta) === 1 ? '' : 's'} lower than last time.`,
+      detail: 'That is a good sign. Lower scores usually mean fewer symptoms.',
+    }
+  }
+
+  return {
+    tone: 'worsening' as const,
+    title: `${scoreDelta} point${scoreDelta === 1 ? '' : 's'} higher than last time.`,
+    detail: 'That can mean symptoms are feeling heavier lately, so it is worth paying attention to.',
+  }
+}
+
+function getHistoryBarTone(score: number) {
+  if (score <= 4) {
+    return 'low'
+  }
+
+  if (score <= 9) {
+    return 'mild'
+  }
+
+  if (score <= 14) {
+    return 'moderate'
+  }
+
+  return 'high'
+}
 
 export function Phq9App() {
   const totalSteps = PHQ9_QUESTIONS.length + 1
   const [formValues, setFormValues] = useState<Phq9FormValues>(EMPTY_FORM_VALUES)
   const [result, setResult] = useState<Phq9Result | null>(null)
   const [completedResponse, setCompletedResponse] = useState<CompletedPhq9Response | null>(null)
+  const [recentResponses, setRecentResponses] = useState<StoredCompletedPhq9Response[]>([])
   const [saveStatus, setSaveStatus] = useState<SaveStatus>('idle')
+  const [historyStatus, setHistoryStatus] = useState<HistoryStatus>('idle')
   const [showErrors, setShowErrors] = useState(false)
   const [isSafetyDialogOpen, setIsSafetyDialogOpen] = useState(false)
   const [currentStep, setCurrentStep] = useState(0)
@@ -32,6 +112,7 @@ export function Phq9App() {
   const resultsRef = useRef<HTMLElement | null>(null)
   const autoAdvanceTimeoutRef = useRef<number | null>(null)
   const saveAttemptRef = useRef(0)
+  const historyRequestRef = useRef(0)
 
   const item9Answer = formValues.symptoms[8]
   const isDifficultyStep = currentStep === PHQ9_QUESTIONS.length
@@ -92,6 +173,41 @@ export function Phq9App() {
       isComplete: missingSymptomIndexes.length === 0 && !missingDifficulty,
     }
   }, [formValues])
+
+  const historyEntries = useMemo(() => {
+    return [...recentResponses].reverse()
+  }, [recentResponses])
+
+  const historySummary = useMemo(() => {
+    return getHistorySummary(recentResponses)
+  }, [recentResponses])
+
+  async function loadRecentResponses() {
+    const nextRequest = historyRequestRef.current + 1
+    historyRequestRef.current = nextRequest
+    setHistoryStatus('loading')
+
+    try {
+      const nextResponses = await fetchRecentCompletedResponses(HISTORY_LIMIT)
+
+      if (historyRequestRef.current !== nextRequest) {
+        return
+      }
+
+      setRecentResponses(nextResponses)
+      setHistoryStatus('ready')
+    } catch {
+      if (historyRequestRef.current !== nextRequest) {
+        return
+      }
+
+      setHistoryStatus('error')
+    }
+  }
+
+  useEffect(() => {
+    void loadRecentResponses()
+  }, [])
 
   function updateSymptomAnswer(index: number, value: PhqAnswer) {
     setFormValues((current) => {
@@ -156,6 +272,7 @@ export function Phq9App() {
       }
 
       setSaveStatus('saved')
+      void loadRecentResponses()
     } catch {
       if (saveAttemptRef.current !== saveAttempt) {
         return
@@ -391,6 +508,69 @@ export function Phq9App() {
                 ) : null}
               </section>
             ) : null}
+
+            <section className="history-panel" data-testid="history-panel">
+              <div className="history-header">
+                <div>
+                  <p className="result-label">Progress</p>
+                  <h3
+                    className={`history-title history-title-${historySummary.tone}`}
+                  >
+                    {historySummary.title}
+                  </h3>
+                </div>
+                <p className="history-caption">Last {HISTORY_LIMIT} saved check-ins</p>
+              </div>
+
+              <p className="history-copy">{historySummary.detail}</p>
+
+              {historyEntries.length > 0 ? (
+                <>
+                  <div className="history-chart-shell">
+                    <div aria-hidden="true" className="history-axis">
+                      <span>27 - needs attention</span>
+                      <span>0 - better</span>
+                    </div>
+                    <ol className="history-chart" data-testid="history-chart">
+                      {historyEntries.map((entry, index) => {
+                        const barHeight = Math.max((entry.totalScore / 27) * 100, 10)
+                        const isLatestEntry = index === historyEntries.length - 1
+                        const barTone = getHistoryBarTone(entry.totalScore)
+
+                        return (
+                          <li className="history-column" key={entry._id}>
+                            <div className="history-bar-stack">
+                              <span className="history-score">{entry.totalScore}</span>
+                              <div
+                                aria-label={`${formatHistoryDate(entry.submittedAt)} score ${entry.totalScore}`}
+                                className={`history-bar history-bar-${barTone}${
+                                  isLatestEntry ? ' history-bar-latest' : ''
+                                }`}
+                                data-testid={isLatestEntry ? 'history-bar-latest' : undefined}
+                                role="img"
+                                style={{ height: `${barHeight}%` }}
+                              />
+                            </div>
+                            <span className="history-date">{formatHistoryDate(entry.submittedAt)}</span>
+                          </li>
+                        )
+                      })}
+                    </ol>
+                  </div>
+                  <p className="history-legend" data-testid="history-legend">
+                    Green is lower and better. Yellow and orange mean symptoms are higher. Red means the score is high and worth more attention.
+                  </p>
+                </>
+              ) : historyStatus === 'loading' ? (
+                <p className="history-empty">Loading your saved check-ins...</p>
+              ) : historyStatus === 'error' ? (
+                <p className="history-empty">
+                  We could not load earlier saved check-ins yet, so this view only shows the current result.
+                </p>
+              ) : (
+                <p className="history-empty">Save a result to start building your progress view.</p>
+              )}
+            </section>
 
             {result.item9Positive ? (
               <section className="safety-panel" data-testid="safety-panel">

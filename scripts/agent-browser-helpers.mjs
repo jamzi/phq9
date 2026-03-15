@@ -204,6 +204,8 @@ export function localStateScript() {
       checkedCount: document.querySelectorAll('input:checked').length,
       dialogText: document.querySelector('[role="alertdialog"]')?.textContent?.trim() || null,
       formErrorText: document.querySelector('[data-testid="form-error"]')?.textContent?.trim() || null,
+      historyBarCount: document.querySelectorAll('.history-bar').length,
+      historyPanelText: document.querySelector('[data-testid="history-panel"]')?.textContent?.trim() || null,
       safetyPanelText: document.querySelector('[data-testid="safety-panel"]')?.textContent?.trim() || null,
       saveState: document.querySelector('[data-testid="save-status"]')?.getAttribute('data-save-state') || null,
       saveStatusText: document.querySelector('[data-testid="save-status"]')?.textContent?.trim() || null,
@@ -266,4 +268,10 @@ export async function fetchLatestCompletedResponse(convexUrl) {
   const client = new ConvexHttpClient(convexUrl)
 
   return client.query(anyApi.responses.getLatestCompletedResponse, {})
+}
+
+export async function fetchRecentCompletedResponses(convexUrl, limit = 6) {
+  const client = new ConvexHttpClient(convexUrl)
+
+  return client.query(anyApi.responses.getRecentCompletedResponses, { limit })
 }

@@ -8,8 +8,13 @@ const { saveCompletedResponseMock } = vi.hoisted(() => ({
   saveCompletedResponseMock: vi.fn(),
 }))
 
+const { fetchRecentCompletedResponsesMock } = vi.hoisted(() => ({
+  fetchRecentCompletedResponsesMock: vi.fn(),
+}))
+
 vi.mock('./saveCompletedResponse', () => ({
   saveCompletedResponse: saveCompletedResponseMock,
+  fetchRecentCompletedResponses: fetchRecentCompletedResponsesMock,
 }))
 
 function getResponseLabel(answer: number) {
@@ -34,6 +39,13 @@ async function flushSave() {
   })
 }
 
+async function flushAsyncWork() {
+  await flushSave()
+  await flushSave()
+  await flushSave()
+  await flushSave()
+}
+
 function completeQuestionnaire(answers: number[], difficultyLabel: string) {
   PHQ9_QUESTIONS.forEach((question, index) => {
     const group = screen.getByTestId(`question-${question.id}`)
@@ -52,6 +64,8 @@ describe('Phq9App', () => {
     vi.useFakeTimers()
     saveCompletedResponseMock.mockReset()
     saveCompletedResponseMock.mockResolvedValue(undefined)
+    fetchRecentCompletedResponsesMock.mockReset()
+    fetchRecentCompletedResponsesMock.mockResolvedValue([])
   })
 
   afterEach(() => {
@@ -59,8 +73,9 @@ describe('Phq9App', () => {
     vi.useRealTimers()
   })
 
-  test('auto-advances to the next question after an answer is selected', () => {
+  test('auto-advances to the next question after an answer is selected', async () => {
     render(<Phq9App />)
+    await flushSave()
 
     expect(screen.getByTestId('question-1')).toBeInTheDocument()
     expect(screen.queryByTestId('question-2')).not.toBeInTheDocument()
@@ -79,8 +94,9 @@ describe('Phq9App', () => {
     expect(screen.queryByTestId('score-total')).not.toBeInTheDocument()
   })
 
-  test('keeps a next button available when revisiting an answered question', () => {
+  test('keeps a next button available when revisiting an answered question', async () => {
     render(<Phq9App />)
+    await flushSave()
 
     fireEvent.click(screen.getByRole('radio', { name: 'Several days' }))
     flushAdvance()
@@ -102,7 +118,7 @@ describe('Phq9App', () => {
     render(<Phq9App />)
 
     completeQuestionnaire(comparisonFixtures[1].answers, 'Somewhat difficult')
-    await flushSave()
+    await flushAsyncWork()
 
     expect(screen.getByTestId('result-view')).toBeInTheDocument()
     expect(screen.getByTestId('score-total')).toHaveTextContent('9')
@@ -115,7 +131,7 @@ describe('Phq9App', () => {
     render(<Phq9App />)
 
     completeQuestionnaire(comparisonFixtures[1].answers, 'Somewhat difficult')
-    await flushSave()
+    await flushAsyncWork()
 
     expect(saveCompletedResponseMock).toHaveBeenCalledWith({
       submittedAt: expect.any(String),
@@ -132,7 +148,7 @@ describe('Phq9App', () => {
     render(<Phq9App />)
 
     completeQuestionnaire(comparisonFixtures[1].answers, 'Somewhat difficult')
-    await flushSave()
+    await flushAsyncWork()
 
     fireEvent.click(screen.getByTestId('change-answers-button'))
 
@@ -170,7 +186,7 @@ describe('Phq9App', () => {
     fireEvent.click(within(difficultyGroup).getByRole('radio', { name: 'Somewhat difficult' }))
     flushAdvance()
 
-    await flushSave()
+    await flushAsyncWork()
     expect(screen.getByTestId('safety-panel')).toHaveTextContent(
       'Because you reported at least some thoughts',
     )
@@ -182,7 +198,7 @@ describe('Phq9App', () => {
     render(<Phq9App />)
 
     completeQuestionnaire(comparisonFixtures[1].answers, 'Somewhat difficult')
-    await flushSave()
+    await flushAsyncWork()
 
     expect(screen.getByTestId('save-status')).toHaveTextContent("Couldn't save this result")
 
@@ -191,10 +207,49 @@ describe('Phq9App', () => {
     const firstPayload = saveCompletedResponseMock.mock.calls[0]?.[0]
 
     fireEvent.click(screen.getByTestId('retry-save-button'))
-    await flushSave()
+    await flushAsyncWork()
 
     expect(saveCompletedResponseMock).toHaveBeenCalledTimes(2)
     expect(saveCompletedResponseMock.mock.calls[1]?.[0]).toEqual(firstPayload)
     expect(screen.getByTestId('save-status')).toHaveTextContent('Saved')
+  })
+
+  test('shows a simple score history chart after multiple saved check-ins', async () => {
+    fetchRecentCompletedResponsesMock
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          _id: 'response-2',
+          _creationTime: 2,
+          submittedAt: '2026-03-14T09:00:00.000Z',
+          symptoms: [0, 1, 0, 1, 0, 1, 0, 0, 0],
+          difficulty: 'somewhat_difficult',
+          totalScore: 3,
+          severityBand: 'none/minimal',
+          needsFollowUp: false,
+          item9Positive: false,
+        },
+        {
+          _id: 'response-1',
+          _creationTime: 1,
+          submittedAt: '2026-03-01T09:00:00.000Z',
+          symptoms: comparisonFixtures[1].answers,
+          difficulty: comparisonFixtures[1].difficulty,
+          totalScore: comparisonFixtures[1].expectedScore,
+          severityBand: comparisonFixtures[1].expectedSeverity,
+          needsFollowUp: false,
+          item9Positive: false,
+        },
+      ])
+
+    render(<Phq9App />)
+
+    completeQuestionnaire([0, 1, 0, 1, 0, 1, 0, 0, 0], 'Somewhat difficult')
+    await flushAsyncWork()
+
+    expect(screen.getByTestId('history-panel')).toBeInTheDocument()
+    expect(screen.getByText('6 points lower than last time.')).toBeInTheDocument()
+    expect(screen.getByTestId('history-chart')).toBeInTheDocument()
+    expect(screen.getByTestId('history-bar-latest')).toHaveAccessibleName(/score 3/i)
   })
 })

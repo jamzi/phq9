@@ -4,7 +4,7 @@ import {
   createAgentBrowserSession,
   dismissLocalSafetyDialogScript,
   fetchLatestCompletedResponse,
-  getConfiguredConvexUrl,
+  fetchRecentCompletedResponses,
   localStateScript,
   localUrl,
   normalizeSeverity,
@@ -27,6 +27,13 @@ const safetyFixture = {
   answers: [0, 0, 0, 0, 0, 0, 0, 0, 1],
   difficulty: 'somewhat_difficult',
   expectedScore: 1,
+  expectedSeverity: 'none/minimal',
+}
+
+const improvedFixture = {
+  answers: [0, 1, 0, 1, 0, 1, 0, 0, 0],
+  difficulty: 'somewhat_difficult',
+  expectedScore: 3,
   expectedSeverity: 'none/minimal',
 }
 
@@ -92,8 +99,18 @@ async function completeWizard(browser, answers, difficulty) {
   return waitForSavedResult(() => readLocalState(browser))
 }
 
-function isLocalConvexUrl(convexUrl) {
-  return /^https?:\/\/(127\.0\.0\.1|localhost)(?::\d+)?/i.test(convexUrl)
+function startOverFromResult(browser) {
+  browser.run([
+    'eval',
+    `
+      (() => {
+        const button = document.querySelector('[data-testid="start-over-button"]');
+        if (!button) throw new Error('Missing start over button');
+        button.click();
+        return 'done';
+      })();
+    `,
+  ])
 }
 
 let convexDevServer = null
@@ -101,13 +118,10 @@ let devServer = null
 const browser = createAgentBrowserSession('phq9-local')
 
 try {
-  let convexUrl = getConfiguredConvexUrl()
-
-  if (!convexUrl || isLocalConvexUrl(convexUrl)) {
-    console.log('Starting local Convex dev backend...')
-    convexDevServer = startConvexDev()
-    convexUrl = await waitForConfiguredConvexUrl()
-  }
+  console.log('Starting local Convex dev backend...')
+  convexDevServer = startConvexDev()
+  const convexUrl = await waitForConfiguredConvexUrl()
+  await new Promise((resolve) => setTimeout(resolve, 3000))
 
   devServer = startDevServer()
 
@@ -142,6 +156,49 @@ try {
   assert(
     normalizeSeverity(latestCompletedResponse.severityBand) === mildFixture.expectedSeverity,
     `Expected latest saved severity ${mildFixture.expectedSeverity}, got ${latestCompletedResponse.severityBand}`,
+  )
+
+  console.log('Checking score history after a second saved check-in...')
+  startOverFromResult(browser)
+  await new Promise((resolve) => setTimeout(resolve, 320))
+
+  for (const [index, answer] of improvedFixture.answers.entries()) {
+    await answerQuestion(browser, index + 1, answer)
+  }
+
+  await answerDifficulty(browser, improvedFixture.difficulty)
+  const improvedState = await waitForSavedResult(() => readLocalState(browser))
+
+  assert(
+    improvedState.score === improvedFixture.expectedScore,
+    `Expected improved score ${improvedFixture.expectedScore}, got ${improvedState.score}. State: ${JSON.stringify(improvedState)}`,
+  )
+  assert(
+    normalizeSeverity(improvedState.severity) === improvedFixture.expectedSeverity,
+    `Expected improved severity ${improvedFixture.expectedSeverity}, got ${improvedState.severity}. State: ${JSON.stringify(improvedState)}`,
+  )
+  assert(
+    improvedState.historyBarCount >= 2,
+    `Expected the progress chart to show at least two bars. State: ${JSON.stringify(improvedState)}`,
+  )
+  assert(
+    improvedState.historyPanelText?.includes('6 points lower than last time.'),
+    `Expected the progress panel to compare with the prior result. State: ${JSON.stringify(improvedState)}`,
+  )
+
+  const recentCompletedResponses = await fetchRecentCompletedResponses(convexUrl)
+
+  assert(
+    recentCompletedResponses.length >= 2,
+    `Expected at least two saved responses for the progress chart. Responses: ${JSON.stringify(recentCompletedResponses)}`,
+  )
+  assert(
+    recentCompletedResponses[0]?.totalScore === improvedFixture.expectedScore,
+    `Expected the latest saved score ${improvedFixture.expectedScore}, got ${recentCompletedResponses[0]?.totalScore}`,
+  )
+  assert(
+    recentCompletedResponses[1]?.totalScore === mildFixture.expectedScore,
+    `Expected the previous saved score ${mildFixture.expectedScore}, got ${recentCompletedResponses[1]?.totalScore}`,
   )
 
   console.log('Checking the immediate item 9 safety dialog...')
